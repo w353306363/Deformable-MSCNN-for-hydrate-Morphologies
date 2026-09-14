@@ -221,3 +221,225 @@ Set-Location -LiteralPath '文件路径'
 
 当前项目默认基于CPU实现，但可随时调整至GPU训练。使用 GPU 时，在代码中将模型、每批 inputs/labels 和损失函数的 class_weights 放在同一 device；训练、验证和逐井预测均使用该设备。输出转换为 NumPy 前调用 `.cpu().numpy()`。
 
+# Gas Hydrate Morphology Classification: Code and Workflow Guide
+
+Date: 2026-09-14.
+
+This guide describes environment configuration, open-data access, input formats, model architectures, and the training and prediction workflow for gas hydrate morphology classification.
+
+## 1. Data Description
+
+### 1.1 The open ODP Leg 204 dataset and manuscript statement
+
+**The ODP Leg 204 data used in this study are publicly available scientific drilling data and can be obtained through official data repositories.** ODP stands for Ocean Drilling Program; Leg 204 was conducted in 2002 to investigate gas hydrates at Hydrate Ridge. Its observations include well logs, cores, and associated geochemical measurements. This study selects Holes 1244E, 1247B, and 1252A rather than using the entire expedition dataset.
+
+### 1.2 Official access points
+
+| Resource | Access point | Purpose |
+|---|---|---|
+| 1244E logging data | [LDEO: Hole 1244E](https://mlp.ldeo.columbia.edu/data/odp/leg204/1244E/) | Logging files and processing documentation |
+| 1247B logging data | [LDEO: Hole 1247B](https://mlp.ldeo.columbia.edu/data/odp/leg204/1247B/) | Logging files and processing documentation |
+| 1252A logging data | [LDEO: Hole 1252A](https://mlp.ldeo.columbia.edu/data/odp/leg204/1252A/) | Logging files and processing documentation |
+| Expedition logging overview | [Leg 204 Logging Summary](https://mlp.ldeo.columbia.edu/data/odp/odp-log_sum/leg204/204.index.html) | Instruments, logged intervals, quality control, and geological setting |
+| Expedition report | [ODP Leg 204 Initial Reports](https://www-odp.tamu.edu/publications/204_IR/204ir.htm) | Site chapters, methods, core descriptions, and associated figures/tables |
+| Cores and other expedition resources | [ODP Database Services](https://www-odp.tamu.edu/isg/database.html) | Official directory for Janus and core photographs; individual hole pages also provide Site core data links |
+
+The logging pages are provided by the logging database at Columbia University's Lamont-Doherty Earth Observatory (LDEO). Download links are organized by data type, including Standard Data (processed ASCII), High Resolution Data, Documents, and additional image, sonic-waveform, or DLIS products. Available types depend on the hole.
+
+### 1.3 From public data to model inputs
+
+1. Open the three official hole pages above and verify Leg 204 and the exact identifiers 1244E, 1247B, and 1252A. Other holes at the same sites, such as 1244D or 1247A, are not interchangeable with the holes used in the manuscript.
+2. Download Documents and Standard Data first; select higher-resolution data or original waveforms if needed. Data-type links display file listings, whereas Download links retrieve the corresponding archives. Preserve the downloaded originals and provenance records.
+3. Read processing notes, field definitions, and units before selecting resistivity, density, and P-/S-wave-related curves. Archive mnemonics need not match `Rt,Den,Vp,Vs`. If a curve contains sonic slowness rather than velocity, convert using its documented units instead of simply renaming the column.
+4. Apply quality control, depth alignment, and any required resampling over the selected interval, then export `Depth,Rt,Den,Vp,Vs` according to Section 4.
+5. Consult expedition reports and core/infrared materials for morphology interpretation.
+6. Record download date, hole, original filenames, tools/logging runs, units, depth datum, selected intervals, processing operations, and label dictionary. Then prepare and run the model following Sections 4–6.
+
+Suggested source reference: Tréhu, A. M., Bohrmann, G., Rack, F. R., Torres, M. E., et al. (2003). *Proceedings of the Ocean Drilling Program, Initial Reports, 204*. Also identify the LDEO data pages used and their access dates.
+
+## 2. Files and models
+
+| Directory | Model definition | Model class | Training/prediction entry point |
+|---|---|---|---|
+| `CNN` | `cnn_model.py` | `HydrateCNN` | `train_predict.py` |
+| `ResNet` | `ResNet_model.py` | `HydrateResNet` | `train_predict.py` |
+| `MSCNN` | `MSCNN_model.py` | `HydrateCNN` | `train_predict.py` |
+| `SE+MSCNN` | `SE_MSCNN_model.py` | `HydrateCNN` | `train_predict.py` |
+| `Deformable Attention+MSCNN` | `Deformable_MSCNN_model.py` | `HydrateCNN` | `train_predict.py` |
+
+### 2.1 Architectures
+
+All entry points supply tensors shaped `[B, 4, 1]` and receive `[B, 3]` logits, where B is batch size. Cross-entropy consumes logits directly; a final Softmax is unnecessary during training. Prediction takes the index of the largest logit.
+
+| Model | Implemented architecture |
+|---|---|
+| CNN | Conv1d 4→64, kernel 3; Conv1d 64→128, kernel 3; BatchNorm and LeakyReLU after each convolution; global average pooling; Linear 128→3 |
+| ResNet | Initial Conv1d 4→64, kernel 7, stride 2; BatchNorm, LeakyReLU, max pooling; two 64-channel residual blocks and two 128-channel blocks; global average pooling; Linear 128→3 |
+| MSCNN | Three parallel branches with kernels 3, 5, and 7; 64 output channels per branch, BatchNorm, and LeakyReLU; concatenation to 192 channels; global average pooling; Linear 192→3 |
+| SE MSCNN | MSCNN with an SE module after each branch activation; reduction ratio 16, 64→4→64, Sigmoid gating |
+| Deformable MSCNN | MSCNN with `DeformableAttention1D(64)` after each branch activation; five sampling points by default; convolution-generated offsets, sampling weights, and value features; aggregation followed by concatenation and classification |
+
+The deformable module uses `tanh` offsets in [-1,1], zero initialization for offset-convolution weights and bias, and sampling positions clamped to [0,L−1]. It uses one-dimensional linear interpolation and convolution/Softmax-generated sampling weights.
+
+## 3. Environment and dependencies
+
+### 3.1 Runtime environment
+
+| Item | Configuration |
+|---|---|
+| Operating system | Windows; command examples use PowerShell |
+| Python | Reference version 3.12.12 |
+| Deep learning framework | PyTorch; installed version listed below |
+| Default execution device | CPU |
+
+The local interpreter is `D:\Anaconda\envs\gpu\python.exe`. Commands below use this interpreter with `-X utf8` for UTF-8 handling. Scripts run on CPU by default; GPU configuration is described in Section 8.3.
+
+### 3.2 Direct dependencies
+
+| Distribution | Import | Purpose | Reference version |
+|---|---|---|---|
+| torch | torch | Networks, autograd, optimization, data loading, checkpoints | 2.9.1+cu130 |
+| numpy | numpy | Arrays, invalid-value handling, normalization, class counts | 2.3.5 |
+| pandas | pandas | CSV input/output | 2.3.3 |
+| scikit-learn | sklearn | Data processing and classification metrics | 1.7.1 |
+| imbalanced-learn | imblearn | Training-set SMOTE oversampling | 0.14.2 |
+| matplotlib | matplotlib | Loss and accuracy plots | 3.10.6 |
+
+`os` is part of the Python standard library and requires no separate installation. The table lists locally installed versions; confirm that the required dependencies import successfully when configuring the environment.
+
+## 4. Input data specification
+
+### 4.1 Required filenames and location
+
+All training scripts read `hydrate_data.npz` from the project root, resolved relative to the script location. No data copies are required in model directories.
+
+The archive preserves the complete numeric tables and column names from the six source CSV files for wells `1244E`, `1247B`, and `1252A`. Each well has four keys: `<well>_data`, `<well>_data_columns`, `<well>_labels`, and `<well>_labels_columns`. Load with `np.load(path, allow_pickle=False)`. Features retain the order `Rt,Den,Vp,Vs`; labels come from the second label-table column, and depth comes from the data-table `Depth` column.
+
+Original CSV files are retained for reference; training no longer reads them. The CSV specifications below describe the source format before packaging. Prediction outputs remain CSV files.
+
+### 4.2 Feature
+
+The first row must contain column headers including exactly `Depth,Rt,Den,Vp,Vs`, with matching capitalization. Extra columns are ignored. Feature selection always follows `['Rt','Den','Vp','Vs']`, regardless of their physical order in the CSV.
+
+| Column | Meaning | Use and unit convention |
+|---|---|---|
+| Depth | Depth | Retained in output, not a model feature; Figure 4 uses m; document the depth datum |
+| Rt | Resistivity | Channel 1; commonly Ω·m; no unit conversion in code |
+| Den | Density | Channel 2; no unit conversion in code |
+| Vp | P-wave velocity | Channel 3; Figure 4 labels km/s |
+| Vs | S-wave velocity | Channel 4; Figure 4 labels km/s |
+
+Use the units documented by the source data and keep them consistent between training and application. Record the density unit explicitly when preparing the CSV.
+
+Synthetic format example only, not research data:
+
+```csv
+Depth,Rt,Den,Vp,Vs
+80.00,1.20,1.70,1.55,0.25
+80.02,1.30,1.72,1.57,0.26
+80.04,1.45,1.71,1.59,0.27
+```
+
+### 4.3 Label
+
+The loader uses `pd.read_csv(label_file, header=None, skiprows=1)` and converts the second column to integers. The file must therefore have one header row and at least two columns. Depth is recommended in the first column, but the script neither reads nor validates that column.
+
+```csv
+Depth,Label
+80.00,0
+80.02,1
+80.04,2
+```
+
+Use integer class indices 0, 1, and 2, with all three classes represented in the combined training data. Record their mapping to non-hydrate, pore-filling hydrate, and fracture-filling hydrate using the actual label dictionary, and preserve it during training and prediction. The example illustrates encoding format only.
+
+Features and labels are matched by row position, not joined by depth. Row count, ordering, and corresponding depths must match exactly. A label file without a header loses its first sample because of `skiprows=1`. Fractional labels can be silently truncated by integer conversion, so validate integer-valued labels beforehand.
+
+### 4.4 Data preparation checklist
+
+1. Perform log quality control, harmonize units and depth datums, resample to a common grid as appropriate, and align labels to the same depths.
+2. Ensure all four attributes are numeric; avoid string placeholders. Validate Depth, preferably with ordered samples and explicitly handled duplicates.
+3. Check feature/label row counts and depth alignment; confirm the 0/1/2 class dictionary.
+4. Inspect class counts after combining the training wells. Default SMOTE uses `k_neighbors=5`, requiring at least six samples in a class being oversampled. It cannot create an entirely missing class. See the [official SMOTE documentation](https://imbalanced-learn.org/stable/references/generated/imblearn.over_sampling.SMOTE.html).
+5. Ensure the resampled training dataset contains at least one complete batch. `drop_last=True` discards the final training batch if it contains fewer than 32 samples.
+
+Complete log quality control before running. The script replaces NaN with 0, positive infinity with 1e6, and negative infinity with -1e6.
+
+## 5. Preprocessing and training settings
+
+Each well is normalized independently, feature by feature, using `(x-min)/(max-min)`. A zero range is replaced with one, mapping a constant column to zero. The test well uses extrema from its own complete input feature interval.
+
+| Setting | Implemented value or behavior |
+|---|---|
+| `WELLS` | 1244E, 1247B, 1252A |
+| `TRAIN_WELLS` | 1244E, 1247B; inside main |
+| `TEST_WELL` | 1252A; inside main |
+| `FEATURES` | Rt, Den, Vp, Vs |
+| `NUM_CLASSES` | 3 |
+| `NUM_EPOCHS` | Up to 100 epochs, not 100 batches |
+| `BATCH_SIZE` | 32 |
+| Optimizer | Adam, lr=0.003, weight_decay=1e-4 |
+| Loss | Class-weighted CrossEntropyLoss |
+| Gradient clipping | max_norm=1.0 |
+| Early stopping | patience=10, min_delta=0.001; monitors test-well loss |
+| SMOTE | Combined training wells only; random_state=42; other defaults |
+| DataLoader | Training: shuffle=True, drop_last=True; test: no shuffling |
+| Random seed | SMOTE: random_state=42; set model and loader seeds consistently for repeated experiments |
+
+Class weights are calculated after SMOTE as `N/(3*n_c)`. If all three classes are balanced, all weights equal one. The training DataLoader shuffles samples and loads them in batches.
+
+## 6. Running the scripts
+
+### 6.1 Prerequisites
+
+Prepare all six input CSVs and confirm that the required dependencies import successfully.
+
+Outputs are saved in the working directory. Preserve any existing checkpoints, plots, and result CSVs with the same names before repeating a run.
+
+### 6.2 Deformable MSCNN example
+
+After placing all six input CSVs in the model directory:
+
+```powershell
+Set-Location -LiteralPath 'File path'
+& 'Interpreter path' -X utf8 .\train_predict.py
+```
+
+For other models, change the working directory to `CNN`, `ResNet`, `MSCNN`, or `SE+MSCNN` and use the same entry-point command. Launching a subdirectory script from the project root does not automatically make its directory the data directory.
+
+Console output includes the resampled class distribution, class weights, training/test losses, overall accuracy, and class statistics. At the end of training, the plot is saved and `plt.show()` is called. With an interactive backend, close the figure window to allow checkpoint saving and CSV export to continue. For noninteractive execution, set `$env:MPLBACKEND='Agg'` before launching.
+
+### 6.3 Rotating the held-out well
+
+The default script only runs 1244E+1247B→1252A. To evaluate each well as held out, edit the split and run each configuration independently:
+
+| Run | TRAIN_WELLS | TEST_WELL |
+|---|---|---|
+| 1 | 1244E, 1247B | 1252A |
+| 2 | 1244E, 1252A | 1247B |
+| 3 | 1247B, 1252A | 1244E |
+
+Set the training and test wells manually for each independent run and record the model, split, seeds, data version, settings, and outputs. Label training-well and test-well predictions separately when organizing results.
+
+## 7. Outputs and evaluation
+
+| Output | Contents |
+|---|---|
+| `training_results.png` | Training/test loss in the upper panel and overall test accuracy in the lower panel |
+| `hydrate_cnn_model.pth` | Model state_dict parameters and buffers; even ResNet uses this filename |
+| `1244E_prediction_results.csv` | Predictions at original 1244E depths |
+| `1247B_prediction_results.csv` | Predictions at original 1247B depths |
+| `1252A_prediction_results.csv` | Predictions at original 1252A depths |
+
+CSV columns are `Depth,True_Label,Predicted_Label`, retaining input row order. Load `.pth` weights with the matching model definition and preserve feature order, normalization, and the label dictionary.
+
+## 8. Applying the model to new wells
+
+### 8.1 New labeled wells for training/evaluation
+
+Prepare the same file formats and update `WELLS`, `TRAIN_WELLS`, and `TEST_WELL` consistently. Preserve feature names, units, and class meanings. Training wells require labels. If feature count or class count changes, update the configuration and retrain; existing weights will generally be incompatible.
+
+### 8.2 GPU execution
+
+The current project is implemented on the CPU by default, but can be switched to GPU training at any time. For GPU execution, move the model, every input/label batch, and loss class_weights to the same device in the code. Use that device throughout training, validation, and per-well prediction, and call `.cpu().numpy()` before NumPy conversion.
+
