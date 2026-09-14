@@ -221,7 +221,12 @@ Set-Location -LiteralPath '文件路径'
 
 当前项目默认基于CPU实现，但可随时调整至GPU训练。使用 GPU 时，在代码中将模型、每批 inputs/labels 和损失函数的 class_weights 放在同一 device；训练、验证和逐井预测均使用该设备。输出转换为 NumPy 前调用 `.cpu().numpy()`。
 
-# Gas Hydrate Morphology Classification: Code and Workflow Guide
+
+
+
+
+
+# English
 
 Date: 2026-09-14.
 
